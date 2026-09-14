@@ -85,11 +85,21 @@ public final class SessionLog {
 
     /// Returns all logged sessions in insertion order. An absent file yields
     /// an empty array (not an error).
+    ///
+    /// If the file exists but cannot be decoded (corruption/truncation), the
+    /// bad file is moved aside (see ``quarantineCorruptFile()``) and an empty
+    /// array is returned, so a single corrupt write does not make every future
+    /// ``append(_:)`` throw forever — new sessions are recorded to a fresh log.
     public func allSessions() throws -> [WorkSession] {
         guard fileManager.fileExists(atPath: fileURL.path) else { return [] }
         let data = try Data(contentsOf: fileURL)
         guard !data.isEmpty else { return [] }
-        return try decoder.decode([WorkSession].self, from: data)
+        do {
+            return try decoder.decode([WorkSession].self, from: data)
+        } catch is DecodingError {
+            try quarantineCorruptFile()
+            return []
+        }
     }
 
     /// Number of completed work sessions per day for the last `lastNDays`
@@ -134,6 +144,23 @@ public final class SessionLog {
     }
 
     // MARK: - Private
+
+    /// Moves a corrupt log file aside as `sessions.json.corrupt-<timestamp>`
+    /// so it is preserved for manual recovery while freeing the canonical path
+    /// for a fresh log. Any stale quarantine target at the same name is
+    /// removed first so the move cannot fail on a collision.
+    private func quarantineCorruptFile() throws {
+        let timestamp = Int(Date().timeIntervalSince1970)
+        let corruptURL = fileURL.deletingLastPathComponent()
+            .appendingPathComponent(
+                "\(fileURL.lastPathComponent).corrupt-\(timestamp)",
+                isDirectory: false
+            )
+        if fileManager.fileExists(atPath: corruptURL.path) {
+            try fileManager.removeItem(at: corruptURL)
+        }
+        try fileManager.moveItem(at: fileURL, to: corruptURL)
+    }
 
     private func write(_ sessions: [WorkSession]) throws {
         let directory = fileURL.deletingLastPathComponent()

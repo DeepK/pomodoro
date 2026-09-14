@@ -116,4 +116,27 @@ import Foundation
         #expect(try log.allSessions().count == 1)
         #expect(try log.allSessions().first?.completedAt == clock.now)
     }
+
+    @Test func corruptLogIsQuarantinedAndAppendSucceeds() throws {
+        let url = makeTempFileURL()
+        let directory = url.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        // Seed the log path with undecodable garbage.
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try Data("this is not valid json".utf8).write(to: url)
+
+        let log = SessionLog(fileURL: url)
+        let session = WorkSession(completedAt: date("2026-09-14T10:00:00Z"), duration: 1500)
+
+        // Appending must succeed instead of throwing forever on the corruption.
+        try log.append(session)
+
+        // The fresh log holds only the newly appended session.
+        #expect(try log.allSessions() == [session])
+
+        // The corrupt file was moved aside (sessions.json.corrupt-<timestamp>).
+        let siblings = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+        #expect(siblings.contains { $0.hasPrefix("sessions.json.corrupt-") })
+    }
 }

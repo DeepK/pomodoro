@@ -7,7 +7,7 @@ import PomodoroCore
 /// reports chart's weekly mode. Daily buckets already come from
 /// ``SessionLog/sessionsPerDay(lastNDays:now:calendar:)`` as `DayCount`.
 struct WeekCount: Identifiable {
-    /// Start-of-week date (the first day of the 7-day bucket).
+    /// Start-of-week date (the first day of the calendar week bucket).
     let weekStart: Date
     /// Total work sessions completed that week.
     let count: Int
@@ -101,6 +101,10 @@ final class PomodoroViewModel: ObservableObject {
 
     /// Starts a fresh work session and begins ticking.
     func start() {
+        // Re-apply the latest settings so durations edited mid-session take
+        // effect on the next fresh session (the engine only picks up a new
+        // config between sessions, not for an in-flight one).
+        engine.update(config: settings.timerConfig)
         engine.start()
         driver.start()
         refresh()
@@ -133,6 +137,9 @@ final class PomodoroViewModel: ObservableObject {
     /// Resets to idle and stops ticking.
     func reset() {
         engine.reset()
+        // Adopt any settings edited during the just-ended session so the note
+        // in SettingsView ("New durations apply after Reset") holds true.
+        engine.update(config: settings.timerConfig)
         driver.stop()
         refresh()
     }
@@ -158,20 +165,57 @@ final class PomodoroViewModel: ObservableObject {
         (try? sessionLog.sessionsPerDay(lastNDays: days)) ?? []
     }
 
-    /// Weekly totals for the last `weeks` weeks, built by summing the daily
-    /// series in 7-day chunks (oldest first).
+    /// Weekly totals for the last `weeks` calendar weeks, oldest first and
+    /// including the current (possibly partial) week.
+    ///
+    /// Each bucket's `weekStart` is a real calendar week boundary from
+    /// `calendar.dateInterval(of: .weekOfYear, ...)`, so it lines up with the
+    /// chart's `.weekOfYear` x-binning (rolling 7-day chunks did not).
     func weeklyCounts(weeks: Int) -> [WeekCount] {
-        let days = (try? sessionLog.sessionsPerDay(lastNDays: weeks * 7)) ?? []
-        var result: [WeekCount] = []
-        var index = 0
-        while index < days.count {
-            let chunk = days[index..<min(index + 7, days.count)]
-            let start = chunk.first?.date ?? Date()
-            let sum = chunk.reduce(0) { $0 + $1.count }
-            result.append(WeekCount(weekStart: start, count: sum))
-            index += 7
+        guard weeks >= 1 else { return [] }
+        let calendar = Calendar.current
+        let now = Date()
+
+        // Start-of-week for each of the last `weeks` calendar weeks, oldest
+        // first (offset 0 == the current week).
+        guard let currentWeek = calendar.dateInterval(of: .weekOfYear, for: now) else {
+            return []
         }
-        return result
+        var weekStarts: [Date] = []
+        for offset in stride(from: weeks - 1, through: 0, by: -1) {
+            guard let start = calendar.date(
+                byAdding: .weekOfYear,
+                value: -offset,
+                to: currentWeek.start
+            ) else { continue }
+            weekStarts.append(start)
+        }
+        guard let earliest = weekStarts.first else { return [] }
+
+        // Pull enough daily buckets to span the earliest week start through
+        // today, then fold each day into the calendar week that contains it.
+        let spanDays = (calendar.dateComponents(
+            [.day],
+            from: earliest,
+            to: calendar.startOfDay(for: now)
+        ).day ?? 0) + 1
+        let days = (try? sessionLog.sessionsPerDay(
+            lastNDays: spanDays,
+            now: now,
+            calendar: calendar
+        )) ?? []
+
+        var countsByWeekStart: [Date: Int] = [:]
+        for day in days {
+            guard let interval = calendar.dateInterval(of: .weekOfYear, for: day.date) else {
+                continue
+            }
+            countsByWeekStart[interval.start, default: 0] += day.count
+        }
+
+        return weekStarts.map {
+            WeekCount(weekStart: $0, count: countsByWeekStart[$0] ?? 0)
+        }
     }
 
     // MARK: - Private

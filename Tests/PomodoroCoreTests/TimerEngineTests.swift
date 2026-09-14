@@ -145,4 +145,25 @@ import Foundation
         #expect(engine.snapshot.phase == .active(.shortBreak))
         #expect(engine.snapshot.remaining == 1)
     }
+
+    @Test func updateThenStartUsesNewDurations() {
+        // Mirrors the view model's start()/reset() path: a config swapped in
+        // between sessions must take effect on the next start. Guards the
+        // CRITICAL fix where mid-session settings edits never reached a fresh
+        // session.
+        let engine = TimerEngine(config: makeConfig(), clock: MutableClock())
+        engine.start()
+        #expect(engine.snapshot.remaining == 4) // original work duration
+
+        engine.reset()
+        engine.update(config: TimerConfig(
+            workDuration: 10,
+            shortBreakDuration: 2,
+            longBreakDuration: 3,
+            cyclesBeforeLongBreak: 2
+        ))
+        engine.start()
+        #expect(engine.snapshot.phase == .active(.work))
+        #expect(engine.snapshot.remaining == 10) // new work duration applied
+    }
 }
