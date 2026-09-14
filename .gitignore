@@ -1,0 +1,13 @@
+# SwiftPM build output
+.build/
+
+# Xcode user-specific state
+xcuserdata/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+
+# macOS
+.DS_Store
+
+# SwiftPM resolved dependencies (none used, but keep local churn out of the tree)
+.swiftpm/
