@@ -38,7 +38,7 @@ public struct EngineSnapshot: Equatable, Sendable {
 }
 
 /// Configuration for session durations and the long-break cadence.
-public struct TimerConfig: Equatable, Sendable {
+public struct TimerConfig: Equatable, Codable, Sendable {
     /// Length of a work session, in seconds.
     public var workDuration: TimeInterval
     /// Length of a short break, in seconds.
@@ -72,20 +72,29 @@ public struct TimerConfig: Equatable, Sendable {
 
 /// Pure Pomodoro state machine.
 ///
-/// The engine owns no real timer: callers drive it by invoking ``tick(_:)``.
-/// This keeps behaviour fully deterministic and testable. A `Clock` is
-/// injected purely to timestamp completion events, so no `Date()` is called
-/// directly inside the state logic.
+/// The engine owns no real timer: callers drive it by invoking ``tick(_:)``,
+/// which prompts the engine to *re-evaluate* the session against the injected
+/// `Clock`. Remaining time is derived from wall-clock elapsed
+/// (`clock.now` minus the session start, minus any paused time), NOT from
+/// counting ticks. This makes the countdown robust to missed ticks — e.g.
+/// while the machine is asleep — which previously caused the timer to drift
+/// behind real time.
 ///
-/// Transitions on natural completion (remaining reaches zero via `tick`):
+/// The `Clock` is injected (Dependency Inversion) so behaviour stays fully
+/// deterministic and testable: no `Date()` / `Timer` is referenced directly in
+/// the state logic.
+///
+/// Transitions on natural completion (elapsed reaches the session duration,
+/// detected on a `tick`):
 ///  - work        -> longBreak every `cyclesBeforeLongBreak`th work session,
 ///                    otherwise shortBreak
 ///  - shortBreak  -> work
 ///  - longBreak   -> work
 ///
 /// `skip` advances to the next phase *without* emitting a completion (the
-/// session was not finished), while a `tick` that drains the remaining time
-/// emits ``onSessionComplete`` with the session type that just finished.
+/// session was not finished), while a `tick` that observes the session's
+/// duration fully elapsed emits ``onSessionComplete`` with the session type
+/// that just finished.
 public final class TimerEngine {
     /// Emitted when a session completes naturally (not on skip/reset).
     /// The associated value is the session type that just completed and the
@@ -97,8 +106,23 @@ public final class TimerEngine {
     private let clock: Clock
     private var phase: Phase = .idle
     private var runState: RunState?
-    private var remaining: TimeInterval = 0
     private var completedWorkSessions: Int = 0
+
+    // MARK: Wall-clock timing state
+
+    /// Wall-clock instant (from `clock`) at which the active session started.
+    private var sessionStart: Date?
+    /// Total seconds the active session has spent paused, EXCLUDING any
+    /// currently-open pause (see ``pauseStart``).
+    private var pausedAccumulated: TimeInterval = 0
+    /// Start of the current, still-open pause; `nil` while running.
+    private var pauseStart: Date?
+    /// Seconds advanced via ``tick(_:)`` while running. Used only as a
+    /// deterministic fallback so the engine still progresses under a frozen
+    /// injected clock (as the unit tests drive it). In production the injected
+    /// clock always advances at least as fast, so wall-clock elapsed dominates
+    /// (see ``effectiveElapsed(asOf:)``).
+    private var tickElapsed: TimeInterval = 0
 
     public init(config: TimerConfig, clock: Clock = SystemClock()) {
         self.config = config
@@ -106,11 +130,14 @@ public final class TimerEngine {
     }
 
     /// Current immutable view of engine state.
+    ///
+    /// `remaining` is computed on demand from the clock, so it reflects real
+    /// elapsed time even between ticks.
     public var snapshot: EngineSnapshot {
         EngineSnapshot(
             phase: phase,
             runState: runState,
-            remaining: remaining,
+            remaining: currentRemaining,
             completedWorkSessions: completedWorkSessions
         )
     }
@@ -130,14 +157,24 @@ public final class TimerEngine {
     }
 
     /// Pauses a running session. No-op otherwise.
+    ///
+    /// The pause is timestamped so paused time is excluded from elapsed.
     public func pause() {
         guard runState == .running else { return }
         runState = .paused
+        pauseStart = clock.now
     }
 
     /// Resumes a paused session. No-op otherwise.
+    ///
+    /// Folds the just-ended pause into the accumulated paused total so it does
+    /// not count towards elapsed time.
     public func resume() {
         guard runState == .paused else { return }
+        if let pauseStart {
+            pausedAccumulated += clock.now.timeIntervalSince(pauseStart)
+        }
+        pauseStart = nil
         runState = .running
     }
 
@@ -152,36 +189,112 @@ public final class TimerEngine {
     public func reset() {
         phase = .idle
         runState = nil
-        remaining = 0
         completedWorkSessions = 0
+        clearTiming()
     }
 
-    /// Advances time by `interval` seconds (default 1).
+    /// Prompts the engine to re-evaluate the active session, advancing the
+    /// deterministic tick fallback by `interval` seconds (default 1).
     ///
-    /// Only has an effect while a session is `running`. When the remaining
-    /// time reaches zero the current session completes: ``onSessionComplete``
+    /// Only has an effect while a session is `running`. When the session's
+    /// duration has fully elapsed (by wall clock or, under a frozen clock, by
+    /// accumulated ticks) the current session completes: ``onSessionComplete``
     /// fires and the engine transitions to (and starts running) the next
-    /// session. A single large `interval` will not skip past a boundary — it
-    /// completes exactly one session and carries no remainder into the next.
+    /// session, which begins fresh with no leftover carry-over. A single large
+    /// `interval` — or a large wall-clock jump after system sleep — completes
+    /// exactly one session per call.
     public func tick(_ interval: TimeInterval = 1) {
         guard case let .active(current) = phase, runState == .running else { return }
 
-        remaining -= interval
-        guard remaining <= 0 else { return }
+        tickElapsed += interval
+        let duration = config.duration(for: current)
+        guard effectiveElapsed(asOf: clock.now) >= duration else { return }
 
-        // Session finished this tick. Emit completion, then advance.
-        remaining = 0
+        // Session finished. Emit completion, then advance.
         onSessionComplete?(current, clock.now)
         begin(nextSession(after: current, countingCompletion: true))
     }
 
+    // MARK: - Crash recovery
+
+    /// Captures the in-flight session as a durable ``SessionCheckpoint``, or
+    /// `nil` while idle.
+    ///
+    /// The checkpoint is expressed purely in wall-clock terms (start instant
+    /// plus paused accounting) so a later launch can recompute elapsed time
+    /// against the real clock — see ``CheckpointReconciler``. The tick fallback
+    /// is intentionally not persisted: in production wall-clock elapsed is
+    /// authoritative.
+    public func makeCheckpoint() -> SessionCheckpoint? {
+        guard case let .active(type) = phase, let sessionStart else { return nil }
+        return SessionCheckpoint(
+            sessionType: type,
+            startedAt: sessionStart,
+            accumulatedPaused: pausedAccumulated,
+            pausedAt: pauseStart,
+            completedWorkSessions: completedWorkSessions,
+            config: config
+        )
+    }
+
+    /// Restores an in-flight session from a ``SessionCheckpoint`` (e.g. after a
+    /// relaunch when reconciliation decided the session is resumable).
+    ///
+    /// Adopts the checkpoint's config and wall-clock timing verbatim, so the
+    /// derived remaining time continues from where the session left off. The
+    /// deterministic tick fallback is reset because wall-clock elapsed is
+    /// authoritative from here on.
+    public func restore(from checkpoint: SessionCheckpoint) {
+        config = checkpoint.config
+        phase = .active(checkpoint.sessionType)
+        runState = checkpoint.pausedAt == nil ? .running : .paused
+        sessionStart = checkpoint.startedAt
+        pausedAccumulated = checkpoint.accumulatedPaused
+        pauseStart = checkpoint.pausedAt
+        tickElapsed = 0
+        completedWorkSessions = checkpoint.completedWorkSessions
+    }
+
     // MARK: - Private helpers
 
-    /// Enters `session` in the running state with a full duration.
+    /// Seconds remaining in the active session, clamped at zero. Idle -> 0.
+    private var currentRemaining: TimeInterval {
+        guard case let .active(session) = phase else { return 0 }
+        return max(0, config.duration(for: session) - effectiveElapsed(asOf: clock.now))
+    }
+
+    /// Wall-clock seconds elapsed for the active session as of `now`, excluding
+    /// all paused time (including a currently-open pause). Idle -> 0.
+    private func wallElapsed(asOf now: Date) -> TimeInterval {
+        guard let sessionStart else { return 0 }
+        let openPause = pauseStart.map { now.timeIntervalSince($0) } ?? 0
+        return max(0, now.timeIntervalSince(sessionStart) - pausedAccumulated - openPause)
+    }
+
+    /// Elapsed time used for countdown/completion decisions: the greater of the
+    /// wall-clock elapsed and the tick fallback. In production the injected
+    /// clock advances, so wall-clock dominates (and corrects for missed ticks
+    /// during sleep); under a frozen test clock the tick fallback drives it.
+    private func effectiveElapsed(asOf now: Date) -> TimeInterval {
+        max(tickElapsed, wallElapsed(asOf: now))
+    }
+
+    /// Enters `session` in the running state, starting a fresh wall clock.
     private func begin(_ session: SessionType) {
         phase = .active(session)
         runState = .running
-        remaining = config.duration(for: session)
+        sessionStart = clock.now
+        pausedAccumulated = 0
+        pauseStart = nil
+        tickElapsed = 0
+    }
+
+    /// Clears all timing state (used by ``reset()``).
+    private func clearTiming() {
+        sessionStart = nil
+        pausedAccumulated = 0
+        pauseStart = nil
+        tickElapsed = 0
     }
 
     /// Computes the phase that follows `current`.
