@@ -21,18 +21,49 @@ work sessions with a simple bar-chart report.
 - Swift toolchain via the Xcode Command Line Tools (`xcode-select --install`),
   or full Xcode.
 
+## Installing on a new Mac
+
+1. **Install the Apple Command Line Tools** (full Xcode also works but isn't
+   required; on CLT-only machines the `Makefile` sets the required build flags
+   automatically):
+
+   ```sh
+   xcode-select --install
+   ```
+
+2. **Clone the repository** (replace the placeholder with your fork/remote):
+
+   ```sh
+   git clone https://github.com/<you>/pomodoro.git && cd pomodoro
+   ```
+
+3. **Verify the build:**
+
+   ```sh
+   make test
+   ```
+
+4. **Run** with `make run` (this stays attached to the terminal):
+
+   ```sh
+   make run
+   ```
+
+   To run detached, build once and launch the binary in the background:
+
+   ```sh
+   make build
+   .build/debug/Pomodoro &
+   ```
+
+Settings and session history are per-machine (stored in `UserDefaults` and
+`~/Library/Application Support/Pomodoro/`), so your stats don't sync between Macs.
+
 ## Build & Run
 
-From the repository root, the recommended (portable) way is via `make`, which
-auto-detects CLT-only vs full-Xcode hosts:
-
-```sh
-make build             # compile
-make test              # run PomodoroCore unit tests
-make run               # build and launch the menu-bar app
-```
-
-On a machine with full Xcode you can also use the plain SwiftPM commands:
+The `make` targets shown above are the portable way to build, test, and run;
+they auto-detect CLT-only vs full-Xcode hosts. With full Xcode you can also use
+the plain SwiftPM commands directly:
 
 ```sh
 swift build            # compile
@@ -42,28 +73,17 @@ swift run Pomodoro      # build and launch the menu-bar app
 
 ### CLT-only machines
 
-On a Command Line Tools-only host (no full Xcode), the default `swiftbuild`
-build system fails at XCBuild initialization, and `swift test` cannot locate
-`Testing.framework`. The `Makefile` handles this by using
-`--build-system native` and adding explicit `-F` framework search paths for
-the CLT Frameworks directory. Just run `make build` / `make test` / `make run`.
+On a Command Line Tools-only host, the default `swiftbuild` build system fails
+at XCBuild initialization and `swift test` cannot locate `Testing.framework`.
+The `Makefile` handles this automatically (`--build-system native` plus `-F`
+search paths for the CLT Frameworks directory), so just use `make`.
 
 The app appears in the macOS menu bar (there is no dock icon or main window);
 click the menu-bar item to open the timer/reports popover, and use the popover
 footer to open Settings or quit.
 
-You can also open the package directly in Xcode:
-
-```sh
-xed .                  # or: File > Open... and select Package.swift
-```
-
-Then select the `Pomodoro` scheme and run.
-
-> Note: on a Command Line Tools-only host, plain `swift build` may fail at
-> XCBuild initialization with an "Unknown error parsing property list"
-> toolchain error. If so, build with the native build system:
-> `swift build --build-system native`.
+You can also open the package in Xcode (`xed .`, or open `Package.swift`) and
+run the `Pomodoro` scheme.
 
 ## Data storage
 
