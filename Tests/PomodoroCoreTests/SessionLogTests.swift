@@ -139,4 +139,82 @@ import Foundation
         let siblings = try FileManager.default.contentsOfDirectory(atPath: directory.path)
         #expect(siblings.contains { $0.hasPrefix("sessions.json.corrupt-") })
     }
+
+    // MARK: - Idempotent append (crash-recovery dedupe)
+
+    @Test func appendIfAbsentSkipsDuplicateWithinTolerance() throws {
+        let url = makeTempFileURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+
+        let log = SessionLog(fileURL: url)
+        // Normal completion logged from the live clock.
+        let logged = WorkSession(completedAt: date("2026-09-14T10:00:00Z"), duration: 1500)
+        try log.append(logged)
+
+        // Reconciliation synthesizes the same completion but 1s off due to
+        // clock/tick skew — within the 2s tolerance, so it must be skipped.
+        let reconciled = WorkSession(completedAt: date("2026-09-14T10:00:01Z"), duration: 1500)
+        let appended = try log.appendIfAbsent(reconciled)
+
+        #expect(appended == false)
+        #expect(try log.allSessions() == [logged])
+    }
+
+    @Test func appendIfAbsentKeepsNearDuplicateOutsideTolerance() throws {
+        let url = makeTempFileURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+
+        let log = SessionLog(fileURL: url)
+        let first = WorkSession(completedAt: date("2026-09-14T10:00:00Z"), duration: 1500)
+        try log.append(first)
+
+        // Same duration but 3s apart — beyond the 2s tolerance, so treated as a
+        // distinct completion and kept.
+        let second = WorkSession(completedAt: date("2026-09-14T10:00:03Z"), duration: 1500)
+        let appended = try log.appendIfAbsent(second)
+
+        #expect(appended == true)
+        #expect(try log.allSessions() == [first, second])
+    }
+
+    @Test func appendIfAbsentKeepsDistinctSessionsSameDay() throws {
+        let url = makeTempFileURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+
+        let log = SessionLog(fileURL: url)
+        let morning = WorkSession(completedAt: date("2026-09-14T09:00:00Z"), duration: 1500)
+        try log.append(morning)
+
+        // A genuinely separate session later the same day must be kept even
+        // when durations are equal — dedupe is not allowed to drop it.
+        let later = WorkSession(completedAt: date("2026-09-14T11:30:00Z"), duration: 1500)
+        let appended = try log.appendIfAbsent(later)
+
+        #expect(appended == true)
+        #expect(try log.allSessions() == [morning, later])
+    }
+
+    @Test func appendIfAbsentDiffersOnDurationWithinTimeTolerance() throws {
+        let url = makeTempFileURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+
+        let log = SessionLog(fileURL: url)
+        let a = WorkSession(completedAt: date("2026-09-14T10:00:00Z"), duration: 1500)
+        try log.append(a)
+
+        // Same instant but a different duration is a different completion.
+        let b = WorkSession(completedAt: date("2026-09-14T10:00:00Z"), duration: 1200)
+        #expect(try log.appendIfAbsent(b) == true)
+        #expect(try log.allSessions() == [a, b])
+    }
+
+    @Test func appendIfAbsentOnEmptyLogAppends() throws {
+        let url = makeTempFileURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+
+        let log = SessionLog(fileURL: url)
+        let session = WorkSession(completedAt: date("2026-09-14T10:00:00Z"), duration: 1500)
+        #expect(try log.appendIfAbsent(session) == true)
+        #expect(try log.allSessions() == [session])
+    }
 }

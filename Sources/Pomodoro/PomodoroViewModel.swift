@@ -375,7 +375,12 @@ final class PomodoroViewModel: ObservableObject {
             // it there so it lands in the correct day bucket for reports.
             let completedAt = checkpoint.startedAt
                 .addingTimeInterval(checkpoint.accumulatedPaused + duration)
-            try? sessionLog.append(
+            // Use the idempotent variant: a crash in the sub-ms window between
+            // handleCompletion's append and the checkpoint overwrite leaves a
+            // stale fully-elapsed WORK checkpoint whose synthesized completedAt
+            // matches the already-logged entry. appendIfAbsent skips that
+            // duplicate so recovery never double-counts a session.
+            _ = try? sessionLog.appendIfAbsent(
                 WorkSession(completedAt: completedAt, duration: duration)
             )
             checkpointStore.clear()

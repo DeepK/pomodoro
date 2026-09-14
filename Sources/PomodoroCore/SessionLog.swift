@@ -83,6 +83,56 @@ public final class SessionLog {
         try write(sessions)
     }
 
+    /// Default tolerance for ``appendIfAbsent(_:tolerance:)`` duplicate matching.
+    ///
+    /// Two seconds: normal-completion entries are timestamped from the live
+    /// clock at the instant the engine completes, whereas crash reconciliation
+    /// *synthesizes* `completedAt` as `startedAt + accumulatedPaused + duration`
+    /// (see ``CheckpointReconciler`` / the view model's reconcile path). Those
+    /// two instants describe the same real completion but can differ by a
+    /// sub-second (tick granularity, clock reads); a small window absorbs that
+    /// skew while staying far below any realistic gap between two genuinely
+    /// distinct back-to-back work sessions.
+    public static let duplicateTolerance: TimeInterval = 2
+
+    /// Appends `session` only if no existing entry already represents the same
+    /// completion, in which case the call is a no-op (idempotent).
+    ///
+    /// A "same completion" match requires an identical `duration` AND a
+    /// `completedAt` within `tolerance` seconds. This closes a crash-recovery
+    /// double-count: if the process dies in the sub-millisecond window between
+    /// ``append(_:)`` logging a finished work session and the subsequent
+    /// checkpoint overwrite, the stale fully-elapsed WORK checkpoint survives
+    /// and launch reconciliation would otherwise re-log the very same session
+    /// via `.completeAndLog`. This variant recognises the already-logged entry
+    /// and skips the duplicate insertion.
+    ///
+    /// Intended for the reconciliation path ONLY — normal completion uses the
+    /// plain ``append(_:)`` so a legitimate back-to-back session of equal
+    /// duration is never wrongly discarded.
+    ///
+    /// - Parameters:
+    ///   - session: The completion to record if not already present.
+    ///   - tolerance: Max absolute `completedAt` delta (seconds) treated as the
+    ///     same completion. Defaults to ``duplicateTolerance``.
+    /// - Returns: `true` if the session was appended, `false` if a matching
+    ///   entry already existed and the call was a no-op.
+    @discardableResult
+    public func appendIfAbsent(
+        _ session: WorkSession,
+        tolerance: TimeInterval = SessionLog.duplicateTolerance
+    ) throws -> Bool {
+        var sessions = try allSessions()
+        let isDuplicate = sessions.contains { existing in
+            existing.duration == session.duration
+                && abs(existing.completedAt.timeIntervalSince(session.completedAt)) <= tolerance
+        }
+        guard !isDuplicate else { return false }
+        sessions.append(session)
+        try write(sessions)
+        return true
+    }
+
     /// Returns all logged sessions in insertion order. An absent file yields
     /// an empty array (not an error).
     ///
