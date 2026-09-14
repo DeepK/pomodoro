@@ -151,6 +151,10 @@ final class PomodoroViewModel: ObservableObject {
         engine.update(config: settings.timerConfig)
         engine.start()
         driver.start()
+        // Starting a fresh session implicitly discards any interrupted session
+        // the user never acted on: drop the stale banner and its checkpoint
+        // BEFORE syncCheckpoint() below re-persists the NEW session's checkpoint.
+        clearPendingResume()
         syncCheckpoint()
         refresh()
     }
@@ -177,6 +181,8 @@ final class PomodoroViewModel: ObservableObject {
         if case .active = engine.snapshot.phase {
             driver.start()
         }
+        // Defensive: also drop any lingering resume banner/checkpoint here.
+        clearPendingResume()
         syncCheckpoint()
         refresh()
     }
@@ -188,6 +194,8 @@ final class PomodoroViewModel: ObservableObject {
         // in SettingsView ("New durations apply after Reset") holds true.
         engine.update(config: settings.timerConfig)
         driver.stop()
+        // Defensive: also drop any lingering resume banner/checkpoint here.
+        clearPendingResume()
         syncCheckpoint()
         refresh()
     }
@@ -214,10 +222,23 @@ final class PomodoroViewModel: ObservableObject {
     /// Discards the interrupted session: clears the checkpoint and returns to
     /// the normal idle state.
     func discardInterruptedSession() {
+        clearPendingResume()
+        refresh()
+    }
+
+    /// Clears the held resume banner and the interrupted session's checkpoint.
+    ///
+    /// Shared by ``discardInterruptedSession()`` and the session actions
+    /// (``start()``/``reset()``/``skip()``): once the user starts or changes a
+    /// session, the interrupted one is implicitly discarded. Callers that
+    /// ``syncCheckpoint()`` immediately afterwards re-persist the NEW session's
+    /// checkpoint, so the ``checkpointStore/clear()`` here only drops the stale
+    /// one. Guarded so the common no-prompt path does no I/O or extra publish.
+    private func clearPendingResume() {
+        guard resumePrompt != nil || pendingCheckpoint != nil else { return }
         checkpointStore.clear()
         pendingCheckpoint = nil
         resumePrompt = nil
-        refresh()
     }
 
     // MARK: - Settings
