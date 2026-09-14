@@ -48,6 +48,8 @@ struct MenuContentView: View {
     /// The default popover: section picker (timer/reports) plus the footer.
     private var mainPane: some View {
         VStack(spacing: 12) {
+            resumeBanner
+
             Picker("View", selection: _tab.projectedValue) {
                 ForEach(Tab.allCases) { Text($0.rawValue).tag($0) }
             }
@@ -67,6 +69,56 @@ struct MenuContentView: View {
         }
         .padding()
         .frame(width: 300)
+    }
+
+    /// Prominent recovery prompt shown when launch reconciliation found a work
+    /// session interrupted by a crash. The session is NOT auto-started: the
+    /// user explicitly chooses Resume or Discard, which the view model forwards
+    /// to the core. Hidden when there is nothing to recover.
+    @ViewBuilder private var resumeBanner: some View {
+        if let prompt = viewModel.resumePrompt {
+            VStack(spacing: 8) {
+                Label("Resume interrupted session?", systemImage: "exclamationmark.arrow.circlepath")
+                    .font(.headline)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                Text("\(formatCountdown(prompt.remaining)) remaining")
+                    .font(.subheadline)
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                HStack(spacing: 8) {
+                    Button {
+                        viewModel.resumeInterruptedSession()
+                    } label: {
+                        Label("Resume", systemImage: "play.fill")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .accessibilityLabel("Resume interrupted session")
+
+                    Button(role: .destructive) {
+                        viewModel.discardInterruptedSession()
+                    } label: {
+                        Label("Discard", systemImage: "trash")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                    .accessibilityLabel("Discard interrupted session")
+                }
+            }
+            .padding(12)
+            .background(
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(Color.orange.opacity(0.15))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(Color.orange.opacity(0.5), lineWidth: 1)
+            )
+            .accessibilityElement(children: .contain)
+        }
     }
 
     /// Settings shown in-place inside the popover, with a back button that
