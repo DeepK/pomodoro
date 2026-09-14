@@ -16,9 +16,12 @@ import PomodoroCore
 /// Menu-bar Pomodoro app.
 ///
 /// The previous stage's CLI stub is replaced here with a `MenuBarExtra` scene
-/// (macOS 13+) plus a `Settings` scene. All timing, persistence, and
-/// aggregation logic lives in `PomodoroCore`; ``PomodoroViewModel`` is the only
-/// bridge between that core and these views.
+/// (macOS 13+). All timing, persistence, and aggregation logic lives in
+/// `PomodoroCore`; ``PomodoroViewModel`` is the only bridge between that core
+/// and these views. Settings are presented inside the popover (see
+/// ``MenuContentView``) rather than via a `Settings` scene, whose
+/// `showSettingsWindow:` action is unreliable for a non-bundled menu-bar
+/// executable.
 @main
 struct PomodoroApp: App {
     // Desugared `@StateObject private var viewModel = PomodoroViewModel()`.
@@ -32,10 +35,6 @@ struct PomodoroApp: App {
             MenuBarLabel(viewModel: viewModel)
         }
         .menuBarExtraStyle(.window)
-
-        Settings {
-            SettingsView(viewModel: viewModel)
-        }
     }
 }
 

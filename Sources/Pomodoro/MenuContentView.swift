@@ -5,8 +5,12 @@ import PomodoroCore
 /// Content shown in the menu-bar popover (window style).
 ///
 /// A segmented control switches between the live timer and the reports chart.
-/// Settings open in the dedicated `Settings` scene. This view only renders
-/// state and forwards user intents to the view model.
+/// Settings are shown in-place inside the popover (toggled by the footer
+/// button, dismissed by a back button): the dedicated `Settings` scene's
+/// `showSettingsWindow:` action is a no-op for a non-bundled menu-bar
+/// executable, so presenting settings here is reliable and needs no window
+/// management. This view only renders state and forwards user intents to the
+/// view model.
 ///
 /// See the property-wrapper note in `PomodoroApp.swift` for why the wrappers
 /// are declared in desugared form here.
@@ -24,11 +28,25 @@ struct MenuContentView: View {
     private var _tab = State<Tab>(initialValue: .timer)
     private var tab: Tab { _tab.wrappedValue }
 
+    // Desugared `@State private var showingSettings = false`. Toggles the
+    // popover between the main content and the embedded settings pane.
+    private var _showingSettings = State<Bool>(initialValue: false)
+    private var showingSettings: Bool { _showingSettings.wrappedValue }
+
     init(viewModel: PomodoroViewModel) {
         _viewModel = ObservedObject(wrappedValue: viewModel)
     }
 
     var body: some View {
+        if showingSettings {
+            settingsPane
+        } else {
+            mainPane
+        }
+    }
+
+    /// The default popover: section picker (timer/reports) plus the footer.
+    private var mainPane: some View {
         VStack(spacing: 12) {
             Picker("View", selection: _tab.projectedValue) {
                 ForEach(Tab.allCases) { Text($0.rawValue).tag($0) }
@@ -51,10 +69,45 @@ struct MenuContentView: View {
         .frame(width: 300)
     }
 
+    /// Settings shown in-place inside the popover, with a back button that
+    /// returns to `mainPane`. Reuses ``SettingsView`` (and thus the view
+    /// model's `persistSettings` flow) unchanged.
+    private var settingsPane: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Button {
+                    _showingSettings.wrappedValue = false
+                } label: {
+                    Label("Back", systemImage: "chevron.backward")
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel("Back to timer")
+
+                Spacer()
+
+                Text("Settings")
+                    .font(.headline)
+
+                Spacer()
+
+                // Invisible mirror of the back button so the title stays
+                // centred without overlapping the leading control.
+                Label("Back", systemImage: "chevron.backward")
+                    .labelStyle(.iconOnly)
+                    .hidden()
+                    .accessibilityHidden(true)
+            }
+            .padding([.horizontal, .top])
+
+            SettingsView(viewModel: viewModel)
+        }
+        .frame(width: 340)
+    }
+
     private var footer: some View {
         HStack {
             Button {
-                openSettings()
+                _showingSettings.wrappedValue = true
             } label: {
                 Label("Settings", systemImage: "gearshape")
             }
@@ -70,14 +123,6 @@ struct MenuContentView: View {
             .accessibilityLabel("Quit Pomodoro")
         }
         .buttonStyle(.borderless)
-    }
-
-    /// Opens the `Settings` scene. `SettingsLink` is macOS 14+, so we use the
-    /// standard AppKit action that shows the settings window, then bring the
-    /// app forward (it is a menu-bar accessory).
-    private func openSettings() {
-        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
-        NSApp.activate(ignoringOtherApps: true)
     }
 }
 
