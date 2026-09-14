@@ -23,13 +23,30 @@ work sessions with a simple bar-chart report.
 
 ## Build & Run
 
-From the repository root:
+From the repository root, the recommended (portable) way is via `make`, which
+auto-detects CLT-only vs full-Xcode hosts:
+
+```sh
+make build             # compile
+make test              # run PomodoroCore unit tests
+make run               # build and launch the menu-bar app
+```
+
+On a machine with full Xcode you can also use the plain SwiftPM commands:
 
 ```sh
 swift build            # compile
 swift test             # run PomodoroCore unit tests
 swift run Pomodoro      # build and launch the menu-bar app
 ```
+
+### CLT-only machines
+
+On a Command Line Tools-only host (no full Xcode), the default `swiftbuild`
+build system fails at XCBuild initialization, and `swift test` cannot locate
+`Testing.framework`. The `Makefile` handles this by using
+`--build-system native` and adding explicit `-F` framework search paths for
+the CLT Frameworks directory. Just run `make build` / `make test` / `make run`.
 
 The app appears in the macOS menu bar (there is no dock icon or main window);
 click the menu-bar item to open the timer/reports popover, and use the popover
