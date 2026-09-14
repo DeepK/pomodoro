@@ -1,18 +1,67 @@
+import SwiftUI
 import PomodoroCore
 
-/// Temporary command-line entry point.
+// NOTE ON PROPERTY WRAPPERS
+// On this host (Command Line Tools only, no Xcode.app, macOS 26 beta SDK) the
+// SwiftUI property wrappers `@State`, `@StateObject`, `@ObservedObject`, and
+// `@Binding` are implemented as macros backed by the `SwiftUIMacros` compiler
+// plugin, which ships only with full Xcode and is not present here. To keep
+// `swift build` green, this UI declares the wrappers' backing storage directly
+// (e.g. `State<T>(initialValue:)`, `ObservedObject(wrappedValue:)`) and reads
+// `.wrappedValue` / `.projectedValue` explicitly. This is exactly what the
+// `@State`/`@StateObject`/`@ObservedObject` sugar expands to, so on a machine
+// with full Xcode the attribute form can be restored verbatim with no
+// behavioural change.
+
+/// Menu-bar Pomodoro app.
 ///
-/// This stub only proves the executable target links against `PomodoroCore`.
-/// A later stage replaces it with the SwiftUI `MenuBarExtra` + Swift Charts
-/// application built on top of the same core modules.
+/// The previous stage's CLI stub is replaced here with a `MenuBarExtra` scene
+/// (macOS 13+) plus a `Settings` scene. All timing, persistence, and
+/// aggregation logic lives in `PomodoroCore`; ``PomodoroViewModel`` is the only
+/// bridge between that core and these views.
 @main
-struct PomodoroApp {
-    static func main() {
-        let settings = PomodoroSettings.default
-        let engine = TimerEngine(config: settings.timerConfig, clock: SystemClock())
-        // Touch the snapshot so the linker keeps the core symbols and to give
-        // a minimal, human-readable signal that wiring works.
-        let state = engine.snapshot
-        print("Pomodoro core ready. Phase: \(state.phase), work: \(Int(settings.workDuration))s")
+struct PomodoroApp: App {
+    // Desugared `@StateObject private var viewModel = PomodoroViewModel()`.
+    private var _viewModel = StateObject(wrappedValue: PomodoroViewModel())
+    private var viewModel: PomodoroViewModel { _viewModel.wrappedValue }
+
+    var body: some Scene {
+        MenuBarExtra {
+            MenuContentView(viewModel: viewModel)
+        } label: {
+            MenuBarLabel(viewModel: viewModel)
+        }
+        .menuBarExtraStyle(.window)
+
+        Settings {
+            SettingsView(viewModel: viewModel)
+        }
+    }
+}
+
+/// The menu-bar label: a timer symbol, plus the live `mm:ss` countdown and a
+/// phase glyph while a session is active.
+private struct MenuBarLabel: View {
+    // Desugared `@ObservedObject var viewModel: PomodoroViewModel`.
+    private var _viewModel: ObservedObject<PomodoroViewModel>
+    private var viewModel: PomodoroViewModel { _viewModel.wrappedValue }
+
+    init(viewModel: PomodoroViewModel) {
+        _viewModel = ObservedObject(wrappedValue: viewModel)
+    }
+
+    var body: some View {
+        switch viewModel.snapshot.phase {
+        case .idle:
+            Image(systemName: "timer")
+                .accessibilityLabel("Pomodoro timer, idle")
+        case .active(let type):
+            HStack(spacing: 4) {
+                Image(systemName: type.symbolName)
+                Text(formatCountdown(viewModel.snapshot.remaining))
+                    .monospacedDigit()
+            }
+            .accessibilityLabel("\(type.displayName), \(formatCountdown(viewModel.snapshot.remaining)) remaining")
+        }
     }
 }
