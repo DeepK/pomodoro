@@ -9,7 +9,8 @@ work sessions with a simple bar-chart report.
 - Configurable durations: work, short break, and long break, plus the number
   of work cycles before a long break.
 - Session controls: start, pause, resume, skip, and reset.
-- Auto-pauses when the screen locks or the Mac sleeps; resumes when you're back.
+- Auto-pauses when the screen locks or the Mac sleeps; resume manually when
+  you're back.
 - Menu-bar countdown: shows a live `mm:ss` countdown and the current phase
   (Work / Short Break / Long Break) while a session is active.
 - Reports: a Swift Charts bar chart of completed work sessions, with a

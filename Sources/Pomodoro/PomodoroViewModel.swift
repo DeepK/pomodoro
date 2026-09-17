@@ -393,17 +393,13 @@ final class PomodoroViewModel: ObservableObject {
         isAutoPaused = autoPausePolicy.isAutoPaused
     }
 
-    /// The Mac became active: resume through the normal resume path only if the
-    /// session was auto-paused (system-initiated) and is still paused. A manual
-    /// pause is never auto-resumed.
+    /// The Mac became active again: resuming is ALWAYS manual, so this never
+    /// resumes the session. It only clears the auto-pause flag so the
+    /// "Paused — away" cue gives way to the normal paused state, inviting the
+    /// user to resume when ready. The session stays paused until the user taps
+    /// Resume (``togglePauseResume()``).
     private func handleSystemActive() {
-        let action = autoPausePolicy.systemBecameActive(runStatus: currentRunStatus)
-        if action == .resume {
-            engine.resume()
-            driver.start()
-            syncCheckpoint()
-            refresh()
-        }
+        autoPausePolicy.systemBecameActive()
         isAutoPaused = autoPausePolicy.isAutoPaused
     }
 

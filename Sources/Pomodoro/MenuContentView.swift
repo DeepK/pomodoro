@@ -206,15 +206,25 @@ private struct TimerControlsView: View {
             if viewModel.isAutoPaused {
                 // Auto-paused because the Mac went away (sleep/lock/screensaver);
                 // surface why the countdown froze instead of the phase name.
+                // Resuming is manual, so this cue stays only until the Mac
+                // returns (which clears the flag), not until an auto-resume.
                 Label("Paused — away", systemImage: "moon.zzz.fill")
                     .font(.headline)
                     .foregroundStyle(.secondary)
-                    .accessibilityLabel("Paused because the Mac is away; will resume when you return")
-            } else {
+                    .accessibilityLabel("Paused because the Mac is away; tap Resume when you return")
+            } else if viewModel.isRunning {
                 Label(type.displayName, systemImage: type.symbolName)
                     .font(.headline)
                     .foregroundStyle(type.tint)
                     .accessibilityLabel("Current phase: \(type.displayName)")
+            } else {
+                // Paused and awaiting a manual resume — either a manual pause or
+                // after returning from an away auto-pause (the session never
+                // auto-resumes). Make clear the timer is waiting on the user.
+                Label("Paused — tap Resume", systemImage: "pause.circle.fill")
+                    .font(.headline)
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel("Paused; tap Resume to continue \(type.displayName)")
             }
         }
     }

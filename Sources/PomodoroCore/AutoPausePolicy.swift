@@ -1,8 +1,8 @@
 import Foundation
 
 /// Pure decision logic for auto-pausing the timer while the Mac is "away"
-/// (asleep, display off, screen locked, or running a screensaver) and
-/// auto-resuming when it comes back.
+/// (asleep, display off, screen locked, or running a screensaver). Resuming is
+/// ALWAYS manual: the policy never auto-resumes when the Mac comes back.
 ///
 /// This type is deliberately free of any AppKit / notification dependency: it
 /// only tracks the single bit of policy state — whether the *current* pause was
@@ -19,9 +19,9 @@ import Foundation
 ///  - system inactive + `running` + not already auto-paused -> ``Action/pause``
 ///    and set the auto flag; any other inactive event is a no-op (idempotent,
 ///    so repeated sleep/lock notifications never stack).
-///  - system active + auto flag set + `paused` -> ``Action/resume`` and clear
-///    the flag; if the flag is not set (e.g. the user paused manually) the
-///    active event is a no-op, so a manual pause is never auto-resumed.
+///  - system active -> the flag is cleared but the session stays paused (no
+///    resume). Clearing the flag lets the UI drop the "away" cue and show a
+///    plain paused state that invites the user to resume manually.
 ///  - any manual user action (start/pause/resume/reset/skip) clears the flag,
 ///    so a session the user touched while away is no longer treated as
 ///    system-paused.
@@ -34,14 +34,18 @@ public struct AutoPausePolicy: Equatable, Sendable {
     }
 
     /// The action the view model should perform in response to an event.
+    ///
+    /// There is intentionally no `resume`: resuming is always a manual user
+    /// action, so the policy only ever asks the view model to pause.
     public enum Action: Equatable, Sendable {
         case none
         case pause
-        case resume
     }
 
-    /// Whether the current pause was initiated by the system (i.e. is eligible
-    /// for auto-resume). Cleared on resume and on any manual user action.
+    /// Whether the current pause was initiated by the system while the Mac was
+    /// away. Cleared when the Mac becomes active again and on any manual user
+    /// action. It never gates an auto-resume (there is none); it only drives the
+    /// "Paused — away" UI cue.
     public private(set) var isAutoPaused: Bool
 
     public init(isAutoPaused: Bool = false) {
@@ -59,16 +63,18 @@ public struct AutoPausePolicy: Equatable, Sendable {
     }
 
     /// The Mac became active (wake, screens wake, unlock, screensaver stop).
-    /// Resumes only a session that this policy auto-paused and is still paused,
-    /// then clears the flag. A user's manual pause (flag not set) is left alone.
-    public mutating func systemBecameActive(runStatus: RunStatus) -> Action {
-        guard isAutoPaused else { return .none }
+    /// The session is never auto-resumed — resuming is always manual — so this
+    /// only clears the away flag. Clearing it swaps the "Paused — away" cue for
+    /// the normal paused state, prompting the user to resume when ready.
+    /// Idempotent, and a no-op when the flag was never set (e.g. a manual
+    /// pause).
+    public mutating func systemBecameActive() {
         isAutoPaused = false
-        return runStatus == .paused ? .resume : .none
     }
 
     /// The user manually started/paused/resumed/reset/skipped a session.
-    /// Clears the auto flag so the touched session is no longer auto-resumed.
+    /// Clears the auto flag so the touched session is no longer flagged as
+    /// system-paused.
     public mutating func userDidActManually() {
         isAutoPaused = false
     }
