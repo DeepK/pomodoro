@@ -203,10 +203,19 @@ private struct TimerControlsView: View {
                 .font(.headline)
                 .foregroundStyle(.secondary)
         case .active(let type):
-            Label(type.displayName, systemImage: type.symbolName)
-                .font(.headline)
-                .foregroundStyle(type.tint)
-                .accessibilityLabel("Current phase: \(type.displayName)")
+            if viewModel.isAutoPaused {
+                // Auto-paused because the Mac went away (sleep/lock/screensaver);
+                // surface why the countdown froze instead of the phase name.
+                Label("Paused — away", systemImage: "moon.zzz.fill")
+                    .font(.headline)
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel("Paused because the Mac is away; will resume when you return")
+            } else {
+                Label(type.displayName, systemImage: type.symbolName)
+                    .font(.headline)
+                    .foregroundStyle(type.tint)
+                    .accessibilityLabel("Current phase: \(type.displayName)")
+            }
         }
     }
 

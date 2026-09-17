@@ -51,6 +51,11 @@ final class PomodoroViewModel: ObservableObject {
     /// session is NOT auto-started — the user must choose (see
     /// ``resumeInterruptedSession()`` / ``discardInterruptedSession()``).
     @Published private(set) var resumePrompt: ResumePrompt?
+    /// True while the timer was auto-paused because the Mac went away (sleep,
+    /// display off, screen lock, or screensaver). Drives the "Paused — away" UI
+    /// cue so the user understands why the countdown froze. Mirrors
+    /// ``autoPausePolicy``'s flag for SwiftUI observation.
+    @Published private(set) var isAutoPaused = false
 
     private let engine: TimerEngine
     private let settingsStore: SettingsStore
@@ -71,6 +76,14 @@ final class PomodoroViewModel: ObservableObject {
     /// Observer that clears the checkpoint on a clean quit; a hard crash never
     /// fires it, which is exactly when the checkpoint must survive for recovery.
     private var terminationObserver: NSObjectProtocol?
+    /// Watches for the Mac going away/coming back so the timer can auto-pause
+    /// and auto-resume. Injected (DIP) so tests can drive it with a fake.
+    private let activityMonitor: SystemActivityMonitoring
+    /// Pure state machine that decides whether a system event should pause or
+    /// resume, and tracks whether the current pause was system-initiated. All
+    /// away-pause *policy* lives here; the view model only performs the
+    /// resulting engine action (SRP).
+    private var autoPausePolicy = AutoPausePolicy()
 
     /// - Parameters:
     ///   - settingsStore: Persistence for user settings (UserDefaults in prod).
@@ -78,6 +91,8 @@ final class PomodoroViewModel: ObservableObject {
     ///   - driver: Real-time tick source (injectable for tests).
     ///   - clock: Wall clock used by the engine to timestamp completions.
     ///   - checkpointStore: Durable store for the in-flight crash checkpoint.
+    ///   - activityMonitor: Source of Mac inactive/active transitions used to
+    ///     auto-pause/resume the timer (injectable for tests).
     ///   - playCompletionSound: Side effect fired on session completion.
     init(
         settingsStore: SettingsStore = SettingsStore(store: UserDefaults.standard),
@@ -85,6 +100,7 @@ final class PomodoroViewModel: ObservableObject {
         driver: TimerDriving = TimerDriver(),
         clock: Clock = SystemClock(),
         checkpointStore: CheckpointStore = CheckpointStore(),
+        activityMonitor: SystemActivityMonitoring = SystemActivityMonitor(),
         playCompletionSound: @escaping () -> Void = { NSSound(named: "Glass")?.play() }
     ) {
         let loaded = settingsStore.load()
@@ -94,6 +110,7 @@ final class PomodoroViewModel: ObservableObject {
         self.driver = driver
         self.clock = clock
         self.checkpointStore = checkpointStore
+        self.activityMonitor = activityMonitor
         self.playCompletionSound = playCompletionSound
         self.engine = TimerEngine(config: loaded.timerConfig, clock: clock)
         self.snapshot = engine.snapshot
@@ -112,6 +129,7 @@ final class PomodoroViewModel: ObservableObject {
         // clean quit (all policy lives in PomodoroCore; this only forwards).
         reconcileAtLaunch()
         installTerminationHook()
+        installActivityMonitor()
     }
 
     // MARK: - Derived state for the views
@@ -145,6 +163,7 @@ final class PomodoroViewModel: ObservableObject {
 
     /// Starts a fresh work session and begins ticking.
     func start() {
+        clearAutoPauseFlag()
         // Re-apply the latest settings so durations edited mid-session take
         // effect on the next fresh session (the engine only picks up a new
         // config between sessions, not for an in-flight one).
@@ -161,6 +180,7 @@ final class PomodoroViewModel: ObservableObject {
 
     /// Toggles between paused and running for the active session.
     func togglePauseResume() {
+        clearAutoPauseFlag()
         switch snapshot.runState {
         case .running:
             engine.pause()
@@ -177,6 +197,7 @@ final class PomodoroViewModel: ObservableObject {
 
     /// Skips to the next phase (no completion event) and keeps ticking.
     func skip() {
+        clearAutoPauseFlag()
         engine.skip()
         if case .active = engine.snapshot.phase {
             driver.start()
@@ -189,6 +210,7 @@ final class PomodoroViewModel: ObservableObject {
 
     /// Resets to idle and stops ticking.
     func reset() {
+        clearAutoPauseFlag()
         engine.reset()
         // Adopt any settings edited during the just-ended session so the note
         // in SettingsView ("New durations apply after Reset") holds true.
@@ -347,6 +369,62 @@ final class PomodoroViewModel: ObservableObject {
         snapshot = engine.snapshot
     }
 
+    // MARK: - Away auto-pause (policy lives in AutoPausePolicy; VM performs I/O)
+
+    /// Wires the system-activity monitor to the auto-pause handlers and starts
+    /// observing. Callbacks are delivered on the main queue by the monitor.
+    private func installActivityMonitor() {
+        activityMonitor.onInactive = { [weak self] in self?.handleSystemInactive() }
+        activityMonitor.onActive = { [weak self] in self?.handleSystemActive() }
+        activityMonitor.start()
+    }
+
+    /// The Mac became inactive: pause a running session through the normal
+    /// pause path (so paused time accrues and the checkpoint is re-saved) iff
+    /// the policy says so. Repeated inactive events are idempotent.
+    private func handleSystemInactive() {
+        let action = autoPausePolicy.systemBecameInactive(runStatus: currentRunStatus)
+        if action == .pause {
+            engine.pause()
+            driver.stop()
+            syncCheckpoint()
+            refresh()
+        }
+        isAutoPaused = autoPausePolicy.isAutoPaused
+    }
+
+    /// The Mac became active: resume through the normal resume path only if the
+    /// session was auto-paused (system-initiated) and is still paused. A manual
+    /// pause is never auto-resumed.
+    private func handleSystemActive() {
+        let action = autoPausePolicy.systemBecameActive(runStatus: currentRunStatus)
+        if action == .resume {
+            engine.resume()
+            driver.start()
+            syncCheckpoint()
+            refresh()
+        }
+        isAutoPaused = autoPausePolicy.isAutoPaused
+    }
+
+    /// Maps the current engine snapshot to the policy's ``RunStatus``.
+    private var currentRunStatus: AutoPausePolicy.RunStatus {
+        switch snapshot.runState {
+        case .running: return .running
+        case .paused: return .paused
+        case .none: return .idle
+        }
+    }
+
+    /// Clears the auto-pause flag because the user manually acted on the
+    /// session (start/pause/resume/reset/skip); such a session is no longer
+    /// eligible for auto-resume. Guarded so the common path publishes nothing.
+    private func clearAutoPauseFlag() {
+        guard autoPausePolicy.isAutoPaused else { return }
+        autoPausePolicy.userDidActManually()
+        isAutoPaused = false
+    }
+
     // MARK: - Crash recovery internals
 
     /// Persists the current in-flight session as a checkpoint, or clears the
@@ -412,6 +490,7 @@ final class PomodoroViewModel: ObservableObject {
     }
 
     deinit {
+        activityMonitor.stop()
         if let terminationObserver {
             NotificationCenter.default.removeObserver(terminationObserver)
         }
